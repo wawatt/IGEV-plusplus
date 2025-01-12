@@ -21,7 +21,7 @@ DEVICE = 'cuda'
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 def load_image(imfile):
-    img = np.array(Image.open(imfile)).astype(np.uint8)
+    img = np.array(Image.open(imfile))[:,:,0:3].astype(np.uint8)
     img = torch.from_numpy(img).permute(2, 0, 1).float()
     return img[None].to(DEVICE)
 
@@ -52,22 +52,48 @@ def demo(args):
             disp = disp.cpu().numpy().squeeze()
             if args.save_png:
                 disp_16 = np.round(disp * 256).astype(np.uint16)
-                skimage.io.imsave(file_stem, disp_16)
-            # plt.imsave(file_stem, disp, cmap='jet')
+                # skimage.io.imsave(file_stem, disp_16)
+                plt.imsave(file_stem, disp, cmap='jet')
 
             if args.save_numpy:
                 np.save(file_stem.replace('.png', '.npy'), disp)
+                
+        dummy_input_left = torch.randn(1, 3, 384, 640).to(DEVICE)  # 左图像
+        dummy_input_right = torch.randn(1, 3, 384, 640).to(DEVICE)  # 右图像
+
+        # 导出为 ONNX 格式，并设置输入和输出的名称
+        torch.onnx.export(model, 
+            (dummy_input_left, dummy_input_right), 
+            "IGEVStereo_rt.onnx", 
+            verbose=True,
+            opset_version=13,
+            do_constant_folding=True,
+            export_params=True,
+            input_names=['left','right'], 
+            output_names=['pred_disp'],
+            dynamic_axes = None
+        )
+        import onnx
+        import onnxsim
+    try:
+        model_onnx = onnx.load("IGEVStereo_rt.onnx")  # load onnx model
+        # model_opt, check = onnxsim.simplify(model_onnx, include_subgraph=True, skip_shape_inference=True)
+        model_opt, check = onnxsim.simplify(model_onnx)
+    
+        assert check, 'assert check failed'
+        onnx.save(model_opt, "IGEVStereo_rt_simplified.onnx")
+        print("ok")
+    except Exception as e:
+        print(f'----------------simplifier failure: {e}')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--restore_ckpt', help="restore checkpoint", default='./pretrained_models/igev_rt/kitti.pth')
+    parser.add_argument('--restore_ckpt', help="restore checkpoint", default='./pretrained_models/igev_rt/sceneflow.pth')
     parser.add_argument('--save_png', action='store_true', default=True, help='save output as gray images')
     parser.add_argument('--save_numpy', action='store_true', help='save output as numpy arrays')
-    parser.add_argument('-l', '--left_imgs', help="path to all first (left) frames", default="/data/StereoDatasets/kitti/2015/testing/image_2/*_10.png")
-    parser.add_argument('-r', '--right_imgs', help="path to all second (right) frames", default="/data/StereoDatasets/kitti/2015/testing/image_3/*_10.png")
-    # parser.add_argument('-l', '--left_imgs', help="path to all first (left) frames", default="/data/StereoDatasets/kitti/2012/testing/colored_0/*_10.png")
-    # parser.add_argument('-r', '--right_imgs', help="path to all second (right) frames", default="/data/StereoDatasets/kitti/2012/testing/colored_1/*_10.png")
-    parser.add_argument('--output_directory', help="directory to save output", default="output/kitti2015/disp_0")
+    parser.add_argument('-l', '--left_imgs', help="path to all first (left) frames", default="demo-imgs/sceneflow/*0.png")
+    parser.add_argument('-r', '--right_imgs', help="path to all second (right) frames", default="demo-imgs/sceneflow/*1.png")
+    parser.add_argument('--output_directory', help="directory to save output", default="output/")
     parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
     parser.add_argument('--precision_dtype', default='float32', choices=['float16', 'bfloat16', 'float32'], help='Choose precision type: float16 or bfloat16 or float32')
     parser.add_argument('--valid_iters', type=int, default=8, help='number of flow-field updates during forward pass')

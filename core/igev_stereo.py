@@ -99,6 +99,8 @@ class IGEVStereo(nn.Module):
         super().__init__()
         self.args = args
         
+        self.gwc_volume_unfold = Build_gwc_volume_unfold(self.args.max_disp//4)
+        
         context_dims = args.hidden_dims
 
         self.cnet = MultiBasicEncoder(output_dim=[args.hidden_dims, context_dims], norm_fn="batch", downsample=args.n_downsample)
@@ -158,7 +160,7 @@ class IGEVStereo(nn.Module):
             up_disp = context_upsample(disp*4., spx_pred)
         return up_disp
 
-    def forward(self, image1, image2, iters=12, test_mode=False):
+    def forward(self, image1, image2, iters=1, test_mode=True):
         """ Estimate disparity between pair of frames """
 
         image1 = (2 * (image1 / 255.0) - 1.0).contiguous()
@@ -175,8 +177,9 @@ class IGEVStereo(nn.Module):
 
             match_left = self.desc(self.conv(features_left[0]))
             match_right = self.desc(self.conv(features_right[0]))
-            all_disp_volume = build_gwc_volume(match_left, match_right, self.args.max_disp//4, 8)
-
+            # all_disp_volume = build_gwc_volume(match_left, match_right, self.args.max_disp//4, 8)
+            all_disp_volume = self.gwc_volume_unfold(match_left, match_right, 8)
+            
             disp_volume0 = all_disp_volume[:,:,:self.args.s_disp_range]
             disp_volume1 = self.patch0(all_disp_volume[:,:,:self.args.m_disp_range])
             disp_volume2 = self.patch1(all_disp_volume)
@@ -204,8 +207,8 @@ class IGEVStereo(nn.Module):
             inp_list = [torch.relu(x[1]) for x in cnet_list]
             inp_list = [list(conv(i).split(split_size=conv.out_channels//3, dim=1)) for i,conv in zip(inp_list, self.context_zqr_convs)]
 
-        geo_block = Combined_Geo_Encoding_Volume
-        geo_fn = geo_block(geo_encoding_volume0.float(), geo_encoding_volume1.float(), geo_encoding_volume2.float(), match_left.float(), match_right.float(), radius=self.args.corr_radius)
+        # geo_block = Combined_Geo_Encoding_Volume
+        geo_fn = Combined_Geo_Encoding_Volume(geo_encoding_volume0.float(), geo_encoding_volume1.float(), geo_encoding_volume2.float(), match_left.float(), match_right.float(), radius=self.args.corr_radius)
         b, c, h, w = match_left.shape
         coords = torch.arange(w).float().to(match_left.device).reshape(1,1,w,1).repeat(b, h, 1, 1)
         disp = agg_disp0
@@ -217,7 +220,6 @@ class IGEVStereo(nn.Module):
             geo_feat0, geo_feat1, geo_feat2, init_corr = geo_fn(disp, coords)
             with autocast(enabled=self.args.mixed_precision, dtype=getattr(torch, self.args.precision_dtype, torch.float16)):
                 net_list, mask_feat_4, delta_disp = self.update_block(net_list, inp_list, geo_feat0, geo_feat1, geo_feat2, init_corr, selective_weights, disp, iter16=self.args.n_gru_layers==3, iter08=self.args.n_gru_layers>=2)
-
             disp = disp + delta_disp
             if test_mode and itr < iters-1:
                 continue

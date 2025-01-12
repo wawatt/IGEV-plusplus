@@ -86,7 +86,9 @@ def groupwise_correlation(fea1, fea2, num_groups):
 
 def build_gwc_volume(refimg_fea, targetimg_fea, maxdisp, num_groups):
     B, C, H, W = refimg_fea.shape
-    volume = refimg_fea.new_zeros([B, num_groups, maxdisp, H, W])
+    # volume = refimg_fea.new_zeros([B, num_groups, maxdisp, H, W], device=refimg_fea.device)
+    volume = torch.zeros(B, num_groups, maxdisp, H, W,device=refimg_fea.device)
+    # # print(volume.shape)
     for i in range(maxdisp):
         if i > 0:
             volume[:, :, i, :, i:] = groupwise_correlation(refimg_fea[:, :, :, i:], targetimg_fea[:, :, :, :-i],
@@ -95,10 +97,25 @@ def build_gwc_volume(refimg_fea, targetimg_fea, maxdisp, num_groups):
             volume[:, :, i, :, :] = groupwise_correlation(refimg_fea, targetimg_fea, num_groups)
     volume = volume.contiguous()
     return volume
+
+class Build_gwc_volume_unfold(nn.Module):
+    def __init__(self, maxdisp):
+        self.maxdisp = maxdisp
+        super(Build_gwc_volume_unfold, self).__init__()
+        self.unfold = nn.Unfold((1, maxdisp), 1, 0, 1)
+        self.left_pad = nn.ZeroPad2d((maxdisp-1, 0, 0, 0))
+
+
+    def forward(self, refimg_fea, targetimg_fea, num_groups):
+        B, C, H, W = refimg_fea.shape
         
-
-
-
+        unfolded_targetimg_fea = self.unfold(self.left_pad(targetimg_fea)).reshape(
+            B, num_groups, C//num_groups, self.maxdisp, H, W)
+        refimg_fea = refimg_fea.view(B, num_groups, C//num_groups, 1, H, W)
+        volume = (refimg_fea*unfolded_targetimg_fea).sum(2)
+        volume = torch.flip(volume, [2])
+        return volume
+    
 def norm_correlation(fea1, fea2):
     cost = torch.mean(((fea1/(torch.norm(fea1, 2, 1, True)+1e-05)) * (fea2/(torch.norm(fea2, 2, 1, True)+1e-05))), dim=1, keepdim=True)
     return cost
